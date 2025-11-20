@@ -1,0 +1,5 @@
+{
+  "name": "Copy of Nexus Orchestrator",
+  "description": "A multi-stage AI pipeline visualizer that refines prompts through sequential agents (Structure, Logic, Polish) before generating a final response.",
+  "requestFramePermissions": []
+}
