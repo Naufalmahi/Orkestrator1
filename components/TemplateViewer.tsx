@@ -1,61 +1,43 @@
 import React from 'react';
-import { Copy, Check } from 'lucide-react';
-import { INITIAL_STAGES } from '../constants';
+import { Check, Copy } from 'lucide-react';
+import { AGENTS } from '../constants';
 
 export const TemplateViewer: React.FC = () => {
-  const [copiedId, setCopiedId] = React.useState<number | null>(null);
+  const [copiedId, setCopiedId] = React.useState<string | null>(null);
 
-  const handleCopy = (text: string, id: number) => {
-    navigator.clipboard.writeText(text);
+  const copy = async (id: string, text: string) => {
+    await navigator.clipboard.writeText(text);
     setCopiedId(id);
-    setTimeout(() => setCopiedId(null), 2000);
+    window.setTimeout(() => setCopiedId(null), 1600);
   };
 
   return (
-    <div className="space-y-6 animate-in fade-in slide-in-from-bottom-4 duration-500">
-      <div className="bg-slate-800/50 p-6 rounded-xl border border-slate-700">
-        <h2 className="text-2xl font-bold text-white mb-2">Orchestrator Templates</h2>
-        <p className="text-slate-400 mb-6">
-          These are the meta-prompts used by the Laravel backend to drive each stage of the pipeline. 
-          Copy these to your `.env` or database configuration.
-        </p>
-
-        <div className="grid gap-6">
-          {INITIAL_STAGES.map((stage) => (
-            <div key={stage.id} className="bg-slate-900 border border-slate-700 rounded-lg overflow-hidden">
-              <div className="bg-slate-800 px-4 py-3 flex items-center justify-between border-b border-slate-700">
-                <div className="flex items-center gap-2">
-                  <span className="bg-blue-500/20 text-blue-400 text-xs font-bold px-2 py-1 rounded uppercase">
-                    Stage {stage.id}
-                  </span>
-                  <span className="text-slate-200 font-medium">{stage.name}</span>
-                </div>
-                <button
-                  onClick={() => handleCopy(stage.template, stage.id)}
-                  className="text-slate-400 hover:text-white transition-colors flex items-center gap-1 text-sm"
-                >
-                  {copiedId === stage.id ? (
-                    <>
-                      <Check className="w-4 h-4 text-emerald-400" />
-                      <span className="text-emerald-400">Copied</span>
-                    </>
-                  ) : (
-                    <>
-                      <Copy className="w-4 h-4" />
-                      <span>Copy Template</span>
-                    </>
-                  )}
-                </button>
-              </div>
-              <div className="p-4 overflow-x-auto">
-                <pre className="text-xs text-slate-300 font-mono leading-relaxed whitespace-pre-wrap">
-                  {stage.template.trim()}
-                </pre>
-              </div>
-            </div>
-          ))}
+    <section className="page-stack">
+      <div className="section-heading">
+        <div>
+          <p className="eyebrow">Agent registry</p>
+          <h2>Roles that make the pipeline work</h2>
         </div>
+        <p>Each role has one job. The orchestrator decides when to call it and what state to pass forward.</p>
       </div>
-    </div>
+      <div className="template-grid">
+        {AGENTS.map((agent) => (
+          <article className="template-card" key={agent.id}>
+            <div className="template-card-head">
+              <div>
+                <span className="agent-id">{agent.id}</span>
+                <h3>{agent.name}</h3>
+                <p>{agent.role}</p>
+              </div>
+              <button className="icon-button" onClick={() => copy(agent.id, agent.systemPrompt)} title="Copy system prompt" type="button">
+                {copiedId === agent.id ? <Check size={16} /> : <Copy size={16} />}
+              </button>
+            </div>
+            <p className="muted">{agent.purpose}</p>
+            <pre>{agent.systemPrompt}</pre>
+          </article>
+        ))}
+      </div>
+    </section>
   );
 };
