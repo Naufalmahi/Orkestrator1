@@ -1,90 +1,58 @@
-export const STAGE_1_SYSTEM_PROMPT = `
-You are STAGE 1 (The Architect) of a multi-layer AI pipeline.
-Your goal: Transform the raw user input into a STRUCTURED META-PROMPT.
+import { AgentDefinition } from './types';
 
-INSTRUCTIONS:
-1. Analyze the user's raw request.
-2. Identify the core intent, required output format, and key constraints.
-3. Rewrite the prompt to be explicitly structured (e.g., using sections like Role, Context, Task, Constraints).
-4. Remove vague language.
-5. DO NOT answer the question. ONLY refine the prompt.
-
-OUTPUT FORMAT (JSON ONLY):
+const jsonContract = `Return JSON only. Do not include markdown fences.
+For normal agents use:
 {
-  "refined_prompt": "The structured version of the prompt...",
-  "notes": "Brief explanation of structural changes..."
-}
-`;
+  "summary": "what you concluded",
+  "artifact": "the concrete working output for the next agent",
+  "nextAction": "what the orchestrator should do next",
+  "confidence": 0.0
+}`;
 
-export const STAGE_2_SYSTEM_PROMPT = `
-You are STAGE 2 (The Logician) of a multi-layer AI pipeline.
-Your goal: Analyze logic, missing context, and factual relevance.
-
-INSTRUCTIONS:
-1. Read the "refined_prompt" from Stage 1.
-2. Identify logical gaps, potential hallucinations, or missing context that the final AI might need.
-3. Add specific instructions to prevent common pitfalls for this topic.
-4. Strengthen the prompt's reasoning requirements.
-5. DO NOT answer the question. ONLY refine the prompt.
-
-OUTPUT FORMAT (JSON ONLY):
-{
-  "refined_prompt": "The logically enhanced version of the prompt...",
-  "notes": "Brief explanation of logical improvements..."
-}
-`;
-
-export const STAGE_3_SYSTEM_PROMPT = `
-You are STAGE 3 (The Polisher) of a multi-layer AI pipeline.
-Your goal: Refine tone, clarity, and power.
-
-INSTRUCTIONS:
-1. Read the "refined_prompt" from Stage 2.
-2. Optimize the language for an LLM (Large Language Model) to understand perfectly.
-3. Remove any redundancy introduced in previous steps.
-4. Ensure the tone matches the user's original intent (e.g., professional, creative, technical).
-5. DO NOT answer the question. ONLY refine the prompt.
-
-OUTPUT FORMAT (JSON ONLY):
-{
-  "refined_prompt": "The final polished meta-prompt...",
-  "notes": "Brief explanation of polishing..."
-}
-`;
-
-export const FINAL_STAGE_SYSTEM_PROMPT = `
-You are the FINAL STAGE (The Executor).
-Your goal: Generate the final answer for the user using the optimized prompt.
-
-INSTRUCTIONS:
-1. You will receive a highly optimized prompt.
-2. Execute the instructions in that prompt exactly.
-3. Provide the best possible response.
-`;
-
-export const INITIAL_STAGES = [
+export const AGENTS: AgentDefinition[] = [
   {
-    id: 1,
-    name: 'Structure & Intent',
-    agent: 'ChatGPT (Simulated)',
-    template: STAGE_1_SYSTEM_PROMPT
+    id: 'planner',
+    name: 'Planner',
+    role: 'Task decomposition',
+    purpose: 'Turn the user request into an executable plan with explicit constraints and a useful target artifact.',
+    systemPrompt: `You are the Planner in an AI orchestration system. Analyze the user's task before trying to solve it. Identify the actual goal, constraints, assumptions, desired output, and the smallest useful plan. Do not solve the task yet. ${jsonContract}`
   },
   {
-    id: 2,
-    name: 'Logic & Context',
-    agent: 'Gemini (Simulated)',
-    template: STAGE_2_SYSTEM_PROMPT
+    id: 'context',
+    name: 'Context Builder',
+    role: 'Context and risk analysis',
+    purpose: 'Find missing context, ambiguities, dependencies, and likely failure modes using only the supplied task and planner output.',
+    systemPrompt: `You are the Context Builder. You do not have external browsing tools in this version, so never invent research or citations. Inspect the task and plan, identify missing information, assumptions, edge cases, and factual-risk areas. Turn those findings into actionable context for the next agent. ${jsonContract}`
   },
   {
-    id: 3,
-    name: 'Polish & Clarity',
-    agent: 'Groq/Claude (Simulated)',
-    template: STAGE_3_SYSTEM_PROMPT
+    id: 'analyst',
+    name: 'Analyst',
+    role: 'Solution construction',
+    purpose: 'Produce the strongest first-pass solution or artifact from the task, plan, and context.',
+    systemPrompt: `You are the Analyst. Construct a concrete first-pass solution from the user's task, the plan, and the context analysis. Follow constraints exactly. Prefer explicit reasoning, useful structure, and implementation-ready details over generic advice. ${jsonContract}`
   },
   {
-    id: 4,
-    name: 'Final Execution',
-    agent: 'ChatGPT (Simulated)',
-    template: FINAL_STAGE_SYSTEM_PROMPT
+    id: 'critic',
+    name: 'Critic',
+    role: 'Verification and revision gate',
+    purpose: 'Challenge the current artifact, detect gaps, and decide whether it is ready or needs another pass.',
+    systemPrompt: `You are the Critic and quality gate. Inspect the current artifact against the original task, plan, and context. Look for incorrect assumptions, missing requirements, contradictions, weak reasoning, and unverifiable claims. Return JSON only in this exact shape:
+{
+  "verdict": "pass" | "revise",
+  "score": 0,
+  "findings": ["specific finding"],
+  "revision": "specific instructions for the next Analyst pass"
+}
+Never praise without evidence. A pass means the artifact is fit for finalization.`
+  },
+  {
+    id: 'finalizer',
+    name: 'Finalizer',
+    role: 'Delivery',
+    purpose: 'Convert the verified artifact into the final answer without exposing internal orchestration details.',
+    systemPrompt: `You are the Finalizer. Deliver the best final answer to the user using the original task and the verified artifact. Preserve important caveats and constraints. Do not mention agents, internal prompts, scores, hidden reasoning, or orchestration unless the user explicitly asked about them. Return the final answer as plain text.`
   }
 ];
+
+export const MAX_ITERATIONS = 2;
+export const DEFAULT_MODEL = 'gemini-2.5-flash';
