@@ -1,329 +1,188 @@
-import React, { useState, useRef, useEffect } from 'react';
-import { INITIAL_STAGES } from './constants';
-import { StageResult, RefinedOutput, PipelineStage } from './types';
-import { runPipelineStage } from './services/geminiService';
-import { StageCard } from './components/StageCard';
+import React, { useMemo, useState } from 'react';
+import { Activity, Check, CircleHelp, KeyRound, LayoutDashboard, Play, RotateCcw, Settings2, ShieldCheck, Terminal } from 'lucide-react';
+import { AGENTS, DEFAULT_MODEL, MAX_ITERATIONS } from './constants';
 import { TemplateViewer } from './components/TemplateViewer';
-import { Play, RefreshCw, Terminal, Code2, Layout, Settings } from 'lucide-react';
+import { StageCard } from './components/StageCard';
+import { AgentRun, AgentOutput, CriticOutput, PipelineStatus } from './types';
+import { runCriticAgent, runFinalizer, runStructuredAgent } from './services/geminiService';
+
+const envKey = (import.meta as ImportMeta & { env?: Record<string, string> }).env?.VITE_GEMINI_API_KEY || '';
+
+function buildRun(agentId: string, iteration: number): AgentRun {
+  const agent = AGENTS.find((item) => item.id === agentId)!;
+  return {
+    id: `${agentId}-${iteration}-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+    agentId,
+    agentName: agent.name,
+    role: agent.role,
+    status: 'pending',
+    input: '',
+    iteration
+  };
+}
 
 const App: React.FC = () => {
-  const [activeTab, setActiveTab] = useState<'pipeline' | 'templates'>('pipeline');
-  const [prompt, setPrompt] = useState("Explain quantum computing to a 5 year old using a cookie analogy.");
-  const [pipelineStatus, setPipelineStatus] = useState<PipelineStage>('idle');
-  const [results, setResults] = useState<StageResult[]>([]);
-  const [selectedStageId, setSelectedStageId] = useState<number>(1);
-  const [showApiKeyModal, setShowApiKeyModal] = useState(false);
-  
-  // We assume API key is in env for demo purposes or user can be prompted.
-  // Ideally, in a real app, we use the modal.
-  const apiKey = process.env.API_KEY || "";
+  const [tab, setTab] = useState<'run' | 'agents'>('run');
+  const [task, setTask] = useState('Design a production-ready architecture for a multi-tenant SaaS checkout system. Explain the data flow, security boundaries, and failure handling.');
+  const [apiKey, setApiKey] = useState(() => sessionStorage.getItem('orkestrator_gemini_key') || envKey);
+  const [status, setStatus] = useState<PipelineStatus>('idle');
+  const [runs, setRuns] = useState<AgentRun[]>(() => AGENTS.map((agent) => buildRun(agent.id, 1)));
+  const [selectedRunId, setSelectedRunId] = useState<string | null>(null);
+  const [error, setError] = useState('');
 
-  const messagesEndRef = useRef<HTMLDivElement>(null);
+  const selectedRun = runs.find((run) => run.id === selectedRunId) || runs[runs.length - 1];
+  const completed = runs.filter((run) => run.status === 'completed').length;
+  const progress = runs.length ? Math.round((completed / runs.length) * 100) : 0;
 
-  useEffect(() => {
-     // Initialize empty results
-     resetPipeline();
-  }, []);
-
-  const resetPipeline = () => {
-    setResults(INITIAL_STAGES.map(s => ({
-      stageId: s.id,
-      stageName: s.name,
-      agentName: s.agent,
-      input: '',
-      output: '',
-      status: 'pending'
-    })));
-    setPipelineStatus('idle');
-    setSelectedStageId(1);
+  const updateRun = (runId: string, patch: Partial<AgentRun>) => {
+    setRuns((current) => current.map((run) => run.id === runId ? { ...run, ...patch } : run));
   };
 
-  const handleRunPipeline = async () => {
-    if (!prompt.trim()) return;
-    if (!apiKey) {
-      alert("API Key is missing. Please check process.env.API_KEY");
-      return;
-    }
+  const persistKey = (value: string) => {
+    setApiKey(value);
+    if (value) sessionStorage.setItem('orkestrator_gemini_key', value);
+    else sessionStorage.removeItem('orkestrator_gemini_key');
+  };
 
-    setPipelineStatus('running');
-    
-    // Reset statuses to pending
-    setResults(prev => prev.map(r => ({ ...r, status: 'pending', output: '', input: '' })));
+  const execute = async () => {
+    if (!task.trim()) return setError('Give the orchestrator a task first.');
+    if (!apiKey.trim()) return setError('Add a Gemini API key in the settings panel.');
 
-    let currentInput = prompt;
-    const newResults: StageResult[] = INITIAL_STAGES.map(s => ({
-        stageId: s.id,
-        stageName: s.name,
-        agentName: s.agent,
-        input: '',
-        output: '',
-        status: 'pending'
-    }));
+    setError('');
+    setStatus('running');
+    const freshRuns = AGENTS.map((agent) => buildRun(agent.id, 1));
+    setRuns(freshRuns);
+    setSelectedRunId(freshRuns[0].id);
 
     try {
-      for (let i = 0; i < INITIAL_STAGES.length; i++) {
-        const stageConfig = INITIAL_STAGES[i];
-        const startTime = Date.now();
+      const planner = freshRuns[0];
+      updateRun(planner.id, { status: 'processing', input: task, startedAt: Date.now() });
+      const plan = await runStructuredAgent(apiKey, AGENTS[0].systemPrompt, `USER TASK:\n${task}`);
+      updateRun(planner.id, { status: 'completed', output: plan, executionTime: Date.now() - (planner.startedAt || Date.now()) });
 
-        // Update UI to show processing
-        newResults[i].status = 'processing';
-        newResults[i].input = currentInput;
-        setResults([...newResults]);
-        setSelectedStageId(stageConfig.id);
+      const contextRun = freshRuns[1];
+      updateRun(contextRun.id, { status: 'processing', input: `${task}\n\nPLAN:\n${plan.artifact}`, startedAt: Date.now() });
+      const context = await runStructuredAgent(apiKey, AGENTS[1].systemPrompt, contextRun.input);
+      updateRun(contextRun.id, { status: 'completed', output: context, executionTime: Date.now() - (contextRun.startedAt || Date.now()) });
 
-        const isFinal = stageConfig.id === 4;
-        
-        // Call Service
-        const output = await runPipelineStage(
-          apiKey,
-          stageConfig.template,
-          currentInput,
-          isFinal
-        );
+      let artifactInput = `${task}\n\nPLAN:\n${plan.artifact}\n\nCONTEXT:\n${context.artifact}`;
+      let latestArtifact = '';
+      let verdict: CriticOutput | undefined;
 
-        const endTime = Date.now();
-        
-        // Update Result
-        newResults[i].status = 'completed';
-        newResults[i].output = output;
-        newResults[i].executionTime = endTime - startTime;
-        setResults([...newResults]);
+      for (let iteration = 1; iteration <= MAX_ITERATIONS; iteration += 1) {
+        const analystRun = iteration === 1 ? freshRuns[2] : buildRun('analyst', iteration);
+        if (iteration > 1) setRuns((current) => [...current, analystRun]);
+        updateRun(analystRun.id, { status: 'processing', input: artifactInput, startedAt: Date.now() });
+        const analyst = await runStructuredAgent(apiKey, AGENTS[2].systemPrompt, artifactInput);
+        latestArtifact = analyst.artifact;
+        updateRun(analystRun.id, { status: 'completed', output: analyst, executionTime: Date.now() - (analystRun.startedAt || Date.now()) });
+        setSelectedRunId(analystRun.id);
 
-        // Prepare input for next stage
-        if (!isFinal) {
-          const typedOutput = output as RefinedOutput;
-          currentInput = typedOutput.refined_prompt;
-        }
+        const criticRun = iteration === 1 ? freshRuns[3] : buildRun('critic', iteration);
+        if (iteration > 1) setRuns((current) => [...current, criticRun]);
+        const criticInput = `${task}\n\nPLAN:\n${plan.artifact}\n\nCONTEXT:\n${context.artifact}\n\nCURRENT ARTIFACT:\n${latestArtifact}`;
+        updateRun(criticRun.id, { status: 'processing', input: criticInput, startedAt: Date.now() });
+        verdict = await runCriticAgent(apiKey, AGENTS[3].systemPrompt, criticInput);
+        updateRun(criticRun.id, { status: 'completed', output: verdict, executionTime: Date.now() - (criticRun.startedAt || Date.now()) });
+        setSelectedRunId(criticRun.id);
 
-        // Small delay for visual effect
-        await new Promise(r => setTimeout(r, 800));
+        if (verdict.verdict === 'pass' || iteration === MAX_ITERATIONS) break;
+        artifactInput = `${artifactInput}\n\nCURRENT ARTIFACT:\n${latestArtifact}\n\nCRITIC REVISION:\n${verdict.revision}`;
       }
-      setPipelineStatus('finished');
-    } catch (error) {
-      console.error(error);
-      setPipelineStatus('idle');
-      // Set current running stage to error
-      const errorIndex = newResults.findIndex(r => r.status === 'processing');
-      if (errorIndex !== -1) {
-        newResults[errorIndex].status = 'error';
-        setResults([...newResults]);
-      }
+
+      const finalRun = freshRuns[4];
+      const finalInput = `${task}\n\nVERIFIED ARTIFACT:\n${latestArtifact}\n\nQUALITY GATE:\n${verdict?.verdict || 'not available'} — ${verdict?.score ?? 0}/100`;
+      updateRun(finalRun.id, { status: 'processing', input: finalInput, startedAt: Date.now() });
+      const finalAnswer = await runFinalizer(apiKey, AGENTS[4].systemPrompt, finalInput);
+      updateRun(finalRun.id, { status: 'completed', output: finalAnswer, executionTime: Date.now() - (finalRun.startedAt || Date.now()) });
+      setSelectedRunId(finalRun.id);
+      setStatus('finished');
+    } catch (caught) {
+      const message = caught instanceof Error ? caught.message : 'The pipeline failed unexpectedly.';
+      setError(message);
+      setStatus('error');
+      setRuns((current) => current.map((run) => run.status === 'processing' ? { ...run, status: 'error', error: message } : run));
     }
   };
 
-  // Render helper for output content
-  const renderStageOutput = (result: StageResult) => {
-    if (result.status === 'pending') {
-      return (
-        <div className="h-full flex flex-col items-center justify-center text-slate-500 opacity-50">
-          <Terminal className="w-12 h-12 mb-4" />
-          <p>Waiting for input...</p>
-        </div>
-      );
-    }
-
-    if (result.status === 'processing') {
-      return (
-        <div className="h-full flex flex-col items-center justify-center text-blue-400">
-          <RefreshCw className="w-12 h-12 mb-4 animate-spin" />
-          <p>Agent is thinking...</p>
-        </div>
-      );
-    }
-
-    if (result.status === 'error') {
-      return (
-        <div className="h-full flex flex-col items-center justify-center text-red-400">
-          <p>An error occurred during generation.</p>
-        </div>
-      );
-    }
-
-    const isFinal = result.stageId === 4;
-    
-    if (isFinal) {
-        return (
-            <div className="space-y-4">
-                <div className="bg-slate-900 p-4 rounded-lg border border-emerald-500/20">
-                    <h4 className="text-emerald-400 font-mono text-xs uppercase mb-2">Final Answer</h4>
-                    <div className="prose prose-invert prose-sm max-w-none">
-                        <p className="whitespace-pre-wrap leading-relaxed text-slate-200">{result.output as string}</p>
-                    </div>
-                </div>
-            </div>
-        )
-    }
-
-    const typedOutput = result.output as RefinedOutput;
-
-    return (
-      <div className="space-y-6 animate-in fade-in zoom-in-95 duration-300">
-        {/* Prompt Comparison */}
-        <div className="grid grid-cols-1 gap-4">
-            <div className="bg-slate-900 p-4 rounded-lg border border-slate-700">
-                <h4 className="text-slate-500 font-mono text-xs uppercase mb-2">Input Prompt</h4>
-                <p className="text-slate-300 text-sm whitespace-pre-wrap leading-relaxed font-mono opacity-70">
-                    {result.input}
-                </p>
-            </div>
-
-            <div className="flex justify-center">
-                <div className="bg-slate-800 p-2 rounded-full border border-slate-700">
-                    <RefreshCw className="w-4 h-4 text-blue-400" />
-                </div>
-            </div>
-
-            <div className="bg-slate-900 p-4 rounded-lg border border-blue-500/30 relative overflow-hidden">
-                <div className="absolute top-0 left-0 w-1 h-full bg-blue-500"></div>
-                <h4 className="text-blue-400 font-mono text-xs uppercase mb-2">Refined Prompt</h4>
-                <p className="text-slate-100 text-sm whitespace-pre-wrap leading-relaxed font-mono">
-                    {typedOutput.refined_prompt}
-                </p>
-            </div>
-        </div>
-
-        {/* Agent Notes */}
-        <div className="bg-slate-800/50 p-4 rounded-lg border border-slate-700">
-            <h4 className="text-orange-400 font-mono text-xs uppercase mb-2 flex items-center gap-2">
-                <Code2 className="w-4 h-4" />
-                Agent Reasoning
-            </h4>
-            <p className="text-slate-300 text-sm italic">
-                "{typedOutput.notes}"
-            </p>
-        </div>
-      </div>
-    );
+  const reset = () => {
+    const fresh = AGENTS.map((agent) => buildRun(agent.id, 1));
+    setRuns(fresh);
+    setSelectedRunId(fresh[0].id);
+    setStatus('idle');
+    setError('');
   };
 
-  const activeResult = results.find(r => r.stageId === selectedStageId);
+  const selectedOutput = useMemo(() => selectedRun?.output, [selectedRun]);
 
   return (
-    <div className="min-h-screen flex flex-col font-sans selection:bg-blue-500/30">
-      {/* Header */}
-      <header className="h-16 border-b border-slate-800 bg-slate-900/80 backdrop-blur-md flex items-center justify-between px-6 sticky top-0 z-50">
-        <div className="flex items-center gap-3">
-            <div className="w-8 h-8 bg-gradient-to-br from-blue-500 to-indigo-600 rounded-lg flex items-center justify-center shadow-lg shadow-blue-500/20">
-                <Terminal className="text-white w-5 h-5" />
-            </div>
-            <div>
-                <h1 className="text-lg font-bold text-white tracking-tight">Nexus Orchestrator</h1>
-                <p className="text-[10px] text-slate-400 uppercase tracking-wider font-semibold">Multi-Layer AI Pipeline</p>
-            </div>
+    <div className="app-shell">
+      <header className="topbar">
+        <div className="brand-lockup">
+          <div className="brand-mark"><Terminal size={18} /></div>
+          <div><strong>Orkestrator</strong><span>agent control room / v2</span></div>
         </div>
-        
-        <div className="flex bg-slate-800 p-1 rounded-lg border border-slate-700">
-            <button 
-                onClick={() => setActiveTab('pipeline')}
-                className={`px-4 py-1.5 text-sm font-medium rounded-md transition-all ${activeTab === 'pipeline' ? 'bg-blue-600 text-white shadow-md' : 'text-slate-400 hover:text-slate-200'}`}
-            >
-                <Layout className="w-4 h-4 inline-block mr-2" />
-                Pipeline
-            </button>
-            <button 
-                onClick={() => setActiveTab('templates')}
-                className={`px-4 py-1.5 text-sm font-medium rounded-md transition-all ${activeTab === 'templates' ? 'bg-blue-600 text-white shadow-md' : 'text-slate-400 hover:text-slate-200'}`}
-            >
-                <Code2 className="w-4 h-4 inline-block mr-2" />
-                Templates
-            </button>
-        </div>
+        <nav className="nav-tabs">
+          <button className={tab === 'run' ? 'nav-tab active' : 'nav-tab'} onClick={() => setTab('run')}><LayoutDashboard size={16} /> Run</button>
+          <button className={tab === 'agents' ? 'nav-tab active' : 'nav-tab'} onClick={() => setTab('agents')}><Settings2 size={16} /> Agents</button>
+        </nav>
+        <div className="topbar-status"><span className={`dot dot-${status}`} /> {status}</div>
       </header>
 
-      {/* Main Content */}
-      <main className="flex-1 container mx-auto max-w-6xl p-6">
-        
-        {activeTab === 'pipeline' ? (
-            <div className="grid grid-cols-12 gap-6 h-[calc(100vh-140px)]">
-                
-                {/* Left Column: Pipeline Status */}
-                <div className="col-span-4 flex flex-col gap-6 h-full overflow-y-auto pr-2">
-                    
-                    {/* Input Section */}
-                    <div className="bg-slate-900 p-5 rounded-xl border border-slate-700 shadow-xl">
-                        <label className="text-xs font-bold text-slate-400 uppercase tracking-wider mb-2 block">
-                            Raw User Prompt
-                        </label>
-                        <textarea
-                            value={prompt}
-                            onChange={(e) => setPrompt(e.target.value)}
-                            className="w-full h-32 bg-slate-950 border border-slate-800 rounded-lg p-3 text-sm text-slate-200 focus:ring-2 focus:ring-blue-500 focus:border-transparent outline-none resize-none placeholder:text-slate-600 transition-all"
-                            placeholder="Enter your complex query here..."
-                            disabled={pipelineStatus === 'running'}
-                        />
-                        <button
-                            onClick={handleRunPipeline}
-                            disabled={pipelineStatus === 'running' || !prompt.trim()}
-                            className={`w-full mt-4 py-3 rounded-lg font-bold text-sm uppercase tracking-wide transition-all flex items-center justify-center gap-2 shadow-lg
-                                ${pipelineStatus === 'running' 
-                                    ? 'bg-slate-800 text-slate-500 cursor-not-allowed' 
-                                    : 'bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-500 hover:to-indigo-500 text-white shadow-blue-500/25'
-                                }
-                            `}
-                        >
-                            {pipelineStatus === 'running' ? (
-                                <>
-                                    <RefreshCw className="w-4 h-4 animate-spin" />
-                                    Processing Pipeline...
-                                </>
-                            ) : (
-                                <>
-                                    <Play className="w-4 h-4 fill-current" />
-                                    Start Pipeline
-                                </>
-                            )}
-                        </button>
-                    </div>
+      <main className="workspace">
+        {tab === 'agents' ? <TemplateViewer /> : (
+          <>
+            <section className="intro-row">
+              <div>
+                <p className="eyebrow">Orchestration, not prompt chaining</p>
+                <h1>Give the task to the system. Let the roles negotiate the work.</h1>
+                <p className="lead">Planner → Context Builder → Analyst → Critic → Finalizer. The critic can send the artifact back for one controlled revision pass.</p>
+              </div>
+              <div className="run-meta"><span>model</span><strong>{DEFAULT_MODEL}</strong><span>revision budget</span><strong>{MAX_ITERATIONS}</strong></div>
+            </section>
 
-                    {/* Stages List */}
-                    <div className="flex-1 overflow-y-auto">
-                        <h3 className="text-xs font-bold text-slate-500 uppercase tracking-wider mb-4 pl-1">Pipeline Stages</h3>
-                        <div className="space-y-1 pb-10">
-                            {results.map((result) => (
-                                <StageCard
-                                    key={result.stageId}
-                                    result={result}
-                                    isActive={selectedStageId === result.stageId}
-                                    onClick={() => setSelectedStageId(result.stageId)}
-                                />
-                            ))}
-                        </div>
-                    </div>
+            <section className="control-grid">
+              <aside className="control-panel">
+                <div className="panel-label">Task</div>
+                <textarea value={task} onChange={(event) => setTask(event.target.value)} disabled={status === 'running'} />
+                <div className="key-row">
+                  <KeyRound size={16} />
+                  <input type="password" value={apiKey} onChange={(event) => persistKey(event.target.value)} placeholder="Gemini API key" />
                 </div>
-
-                {/* Right Column: Stage Details */}
-                <div className="col-span-8 bg-slate-900 rounded-2xl border border-slate-800 shadow-2xl overflow-hidden flex flex-col h-full">
-                    {/* Detail Header */}
-                    <div className="h-16 border-b border-slate-800 bg-slate-900 flex items-center justify-between px-6">
-                        <div>
-                            <h2 className="text-white font-semibold">
-                                {activeResult?.stageName || 'Select a Stage'}
-                            </h2>
-                            <p className="text-xs text-slate-500">{activeResult?.agentName}</p>
-                        </div>
-                        <div className="flex gap-2">
-                             {activeResult?.status === 'completed' && (
-                                <span className="px-2 py-1 rounded bg-emerald-500/10 text-emerald-400 text-xs font-medium border border-emerald-500/20">
-                                    Completed
-                                </span>
-                             )}
-                        </div>
-                    </div>
-
-                    {/* Detail Body */}
-                    <div className="flex-1 overflow-y-auto p-6 bg-slate-950/50 custom-scrollbar">
-                        {activeResult ? renderStageOutput(activeResult) : (
-                            <div className="h-full flex flex-col items-center justify-center text-slate-600">
-                                <Settings className="w-16 h-16 mb-4 opacity-20" />
-                                <p>Select a pipeline stage to view details</p>
-                            </div>
-                        )}
-                        <div ref={messagesEndRef} />
-                    </div>
+                <p className="security-note"><ShieldCheck size={14} /> Stored only in this browser session. For production, move model calls behind your backend.</p>
+                <div className="button-row">
+                  <button className="primary-button" onClick={execute} disabled={status === 'running'}><Play size={16} /> {status === 'running' ? 'Running' : 'Run orchestrator'}</button>
+                  <button className="secondary-button" onClick={reset} disabled={status === 'running'}><RotateCcw size={16} /></button>
                 </div>
-            </div>
-        ) : (
-            <TemplateViewer />
+                {error && <div className="error-box">{error}</div>}
+              </aside>
+
+              <section className="pipeline-panel">
+                <div className="panel-header"><div><span className="eyebrow">Execution trace</span><h2>{completed}/{runs.length} agents completed</h2></div><div className="progress-track"><span style={{ width: `${progress}%` }} /></div></div>
+                <div className="agent-list">
+                  {runs.map((run) => <StageCard key={run.id} run={run} isActive={selectedRun?.id === run.id} onClick={() => setSelectedRunId(run.id)} />)}
+                </div>
+              </section>
+
+              <section className="detail-panel">
+                <div className="detail-head">
+                  <div><span className="eyebrow">Selected run</span><h2>{selectedRun?.agentName || 'Waiting'}</h2><p>{selectedRun?.role}</p></div>
+                  <Activity size={18} />
+                </div>
+                <div className="detail-body">
+                  {!selectedRun && <div className="empty-state"><CircleHelp size={32} /><p>Run the orchestrator to inspect agent state.</p></div>}
+                  {selectedRun && <>
+                    <div className="state-line"><span>Status</span><strong>{selectedRun.status}</strong><span>Iteration</span><strong>{selectedRun.iteration}</strong></div>
+                    {selectedRun.input && <div className="trace-block"><label>Input</label><pre>{selectedRun.input}</pre></div>}
+                    {selectedOutput && typeof selectedOutput === 'string' && <div className="final-output"><label>Final answer</label><div>{selectedOutput}</div></div>}
+                    {selectedOutput && typeof selectedOutput !== 'string' && 'verdict' in selectedOutput && <div className="critic-output"><div className={`verdict verdict-${selectedOutput.verdict}`}>{selectedOutput.verdict}</div><strong>Quality score: {selectedOutput.score}/100</strong><ul>{selectedOutput.findings.map((finding) => <li key={finding}>{finding}</li>)}</ul><p>{selectedOutput.revision}</p></div>}
+                    {selectedOutput && typeof selectedOutput !== 'string' && 'artifact' in selectedOutput && <><div className="trace-block"><label>Summary</label><p>{selectedOutput.summary}</p></div><div className="trace-block"><label>Artifact</label><pre>{selectedOutput.artifact}</pre></div><div className="state-line"><span>Confidence</span><strong>{Math.round(selectedOutput.confidence * 100)}%</strong><span>Next action</span><strong>{selectedOutput.nextAction}</strong></div></>}
+                    {selectedRun.error && <div className="error-box">{selectedRun.error}</div>}
+                  </>}
+                </div>
+              </section>
+            </section>
+          </>
         )}
       </main>
     </div>
