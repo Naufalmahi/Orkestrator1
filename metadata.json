@@ -1,5 +1,5 @@
 {
-  "name": "Copy of Nexus Orchestrator",
-  "description": "A multi-stage AI pipeline visualizer that refines prompts through sequential agents (Structure, Logic, Polish) before generating a final response.",
+  "name": "Orkestrator",
+  "description": "A browser-based AI agent control room with planning, context analysis, solution construction, critic verification, and finalization.",
   "requestFramePermissions": []
 }
